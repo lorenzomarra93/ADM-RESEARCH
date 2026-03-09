@@ -1,0 +1,17 @@
+# Mapping configuration placeholder
+mappings:
+  default:
+    micro:
+      controller: gesture_pad
+      parameters:
+        - timbre_density
+        - micro_spread
+    meso:
+      controller: score_markers
+      parameters:
+        - sectional_trajectory
+    macro:
+      controller: timeline_master
+      parameters:
+        - global_rotation
+        - dynamic_focus

@@ -1,0 +1,34 @@
+{
+  "timeline_start_s": 0.0,
+  "timeline_end_s": 15.92,
+  "total_duration_s": 15.93,
+  "active_object_count_mean": 1.0,
+  "active_object_count_max": 1,
+  "pct_frames_with_motion": 62.77463904582549,
+  "zone_density_time_fraction": {
+    "center_center_mid": 0.012554927809165098,
+    "front_center_mid": 0.6792215944758317,
+    "rear_center_mid": 0.30822347771500314
+  },
+  "front_back_time_fraction": {
+    "rear": 0.30822347771500314,
+    "center": 0.012554927809165053,
+    "front": 0.6792215944758317
+  },
+  "left_right_time_fraction": {
+    "left": 0.0,
+    "center": 1.0,
+    "right": 0.0
+  },
+  "height_time_fraction": {
+    "low": 0.0,
+    "center": 1.0,
+    "high": 0.0
+  },
+  "speed_percentiles": {
+    "p50": 0.19993252108717607,
+    "p90": 0.20007019301104823,
+    "p99": 0.20010993876006608
+  },
+  "spread_mean": 0.0
+}

@@ -1,0 +1,11 @@
+# OSC endpoint defaults
+endpoints:
+  nuendo:
+    host: 127.0.0.1
+    port: 8000
+  spat_revolution:
+    host: 127.0.0.1
+    port: 8001
+logging:
+  record_messages: true
+  log_path: 03_parameter_space_mapping_pipeline/outputs/osc_logs

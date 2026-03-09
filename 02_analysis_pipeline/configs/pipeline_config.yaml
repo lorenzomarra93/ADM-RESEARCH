@@ -1,0 +1,23 @@
+# Default pipeline configuration
+paths:
+  raw_data: 02_analysis_pipeline/data/raw
+  intermediate: 02_analysis_pipeline/data/intermediate
+  processed: 02_analysis_pipeline/data/processed
+  outputs: 02_analysis_pipeline/outputs
+parsing:
+  sample_rate: 48000
+  enable_channel_order_validation: true
+features:
+  window_size: 2048
+  hop_size: 1024
+  descriptors:
+    - position_xyz
+    - divergence
+    - spread
+    - energy
+correlation:
+  methods:
+    - pearson
+    - spearman
+reporting:
+  template: shared_resources/templates/report_template.md

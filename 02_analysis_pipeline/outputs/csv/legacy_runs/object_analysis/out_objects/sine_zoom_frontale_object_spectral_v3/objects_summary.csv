@@ -1,0 +1,2 @@
+object_id,object_name,total_active_frames,total_active_s,mean_gain_db,mean_speed,max_speed,mean_accel,movement_pct,x_min,x_max,y_min,y_max,z_min,z_max,lr_mean,fb_mean,height_mean_pos,spread_mean,width_mean,height_mean,depth_mean,range_x,range_y,range_z,dominant_axis
+AO_100b,Object 11,1593,15.93,0.0,0.12554927809165098,0.20011515515780398,0.0,62.77463904582549,0.0,0.0,-1.0,1.0,0.0,0.0,0.0,0.37161015311845547,0.0,0.0,0.0,0.0,0.0,0.0,2.0,0.0,FB

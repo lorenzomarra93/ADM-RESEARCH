@@ -1,0 +1,54 @@
+{
+  "metrics": {
+    "FB": {
+      "pearson": 0.9968418118664424,
+      "p_value": 0.0,
+      "rmse": 0.06629657845371228,
+      "mae": 0.041931295286677564,
+      "best_lag_ms": 0.0
+    },
+    "LR": {
+      "pearson": NaN,
+      "p_value": NaN,
+      "rmse": 0.0,
+      "mae": 0.0
+    },
+    "height": {
+      "pearson": NaN,
+      "p_value": NaN,
+      "rmse": 1.9811261912740765e-08,
+      "mae": 1.9144058776048854e-08
+    },
+    "spread": {
+      "pearson": NaN,
+      "p_value": NaN,
+      "rmse": 0.6863481434438814,
+      "mae": 0.5343664634443342
+    }
+  },
+  "bed_kpis": {
+    "bed_slope": 0.1814240673032102,
+    "bed_delta_spread": -1.0015521852796638,
+    "bed_path_len": 1.001930161790937,
+    "bed_t_zero_cross": 5.0702557503174175
+  },
+  "obj_kpis": {
+    "obj_slope": 0.1999940804277133,
+    "obj_delta_spread": 0.0,
+    "obj_path_len": 0.9852147835170336,
+    "obj_t_zero_cross": null
+  },
+  "diff_kpis": {
+    "diff_slope": -0.0185700131245031,
+    "diff_delta_spread": -1.0015521852796638,
+    "diff_path_len": 0.01671537827390346,
+    "diff_t_zero_cross": NaN
+  },
+  "segment": {
+    "start_idx": 507,
+    "end_idx": 1001,
+    "start_time": 5.07,
+    "end_time": 10.0,
+    "duration_s": 4.93
+  }
+}

@@ -1,0 +1,9 @@
+numpy
+pandas
+matplotlib
+soundfile
+scipy
+mido
+python-osc
+# optional for MusicXML parsing
+music21
