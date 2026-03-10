@@ -1,0 +1,10 @@
+{
+  "id": "dynamics_to_position",
+  "description": "Maps dynamic intensity (rms_velocity) to front-back position. pp = center (y=0), ff = forward (y=0.8). The x-axis lateral displacement is handled internally by dynamics_to_cartesian() using each instrument's base azimuth.",
+  "trigger_parameter": "rms_velocity",
+  "spatial_target": "position_y",
+  "mapping_function": "linear(0.0→1.0 : 0.0→0.8)",
+  "objects": ["violin_1", "violin_2", "viola", "cello"],
+  "temporal_scope": "micro",
+  "smoothing_ms": 200
+}

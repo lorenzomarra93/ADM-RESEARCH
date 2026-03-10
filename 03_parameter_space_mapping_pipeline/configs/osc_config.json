@@ -1,0 +1,15 @@
+{
+  "default_target": {
+    "name": "nuendo_local",
+    "host": "127.0.0.1",
+    "port": 8000
+  },
+  "listen_port": 9001,
+  "mode": "realtime",
+  "log_directory": "03_parameter_space_mapping_pipeline/data/osc_logs",
+  "_comment_format": "✅ CONFERMATO: /adm/obj/{n}/xyz  [x, y, z]  porta 8000",
+  "_comment_x": "x: -1.0 = sinistra estrema → +1.0 = destra estrema",
+  "_comment_y": "y: -1.0 = rear (dietro) → +1.0 = front (avanti/listener)",
+  "_comment_z": "z: 0.0 = Main layer (attorno a me) | 0.5 = metà altezza | 1.0 = Top layer (sopra di me / overhead)",
+  "_comment_z_note": "Z NON è un asse fisico continuo — è una transizione percettiva Main→Top nel layout Atmos a 2 layer (es. 7.1.4)"
+}
