@@ -1,0 +1,5 @@
+music21
+python-osc
+pandas
+numpy
+matplotlib
