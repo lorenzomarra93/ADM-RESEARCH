@@ -33,7 +33,7 @@ from music21 import chord as m21_chord
 from music21 import converter, dynamics as m21_dynamics, interval, note as m21_note, stream
 from pythonosc.udp_client import SimpleUDPClient
 from pythonosc.dispatcher import Dispatcher
-from pythonosc.osc_server import BlockingOSCUDPServer
+from pythonosc.osc_server import BlockingOSCUDPServer, ThreadingOSCUDPServer
 
 LOGGER = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -277,10 +277,15 @@ def extract_chord_events(score_obj: stream.Score) -> List[ChordEvent]:
     for elem in chords_stream.recurse().getElementsByClass(m21_chord.Chord):
         if not elem.pitches:
             continue
+        # Use absolute offset in the score hierarchy (not relative to measure)
+        try:
+            abs_offset = float(elem.getOffsetInHierarchy(chords_stream))
+        except Exception:
+            abs_offset = float(elem.offset)
         events.append(ChordEvent(
             measure=int(elem.measureNumber or 0),
             beat=float(elem.beat or 0.0),
-            timestamp_s=offset_to_seconds(float(elem.offset), spans),
+            timestamp_s=offset_to_seconds(abs_offset, spans),
             pitches=[p.nameWithOctave for p in elem.pitches],
         ))
     LOGGER.info("Extracted %d chord events", len(events))
@@ -288,32 +293,39 @@ def extract_chord_events(score_obj: stream.Score) -> List[ChordEvent]:
 
 
 def extract_dynamic_events(score_obj: stream.Score) -> List[DynamicEvent]:
-    """Step 2b – extract Dynamic markings from each part.
+    """Step 2b – extract Dynamic markings AND hairpin wedges from each part.
 
-    For each part we walk all Dynamic elements and carry the last seen
-    dynamic forward (last-known-value model) so that every chord event
-    has an associated dynamic level.
+    - <dynamics> elements (p, f, etc.) → single DynamicEvent at that timestamp
+    - <wedge> hairpins (crescendo/diminuendo) → interpolated DynamicEvents
+      per beat between start and stop, using the last known dynamic as start
+      value and inferring the end value (crescendo→+2 levels, dim→-2 levels).
     """
     spans = build_tempo_spans(score_obj)
-
-    # Map part names to canonical object IDs
     part_to_object = _build_part_to_object_map(score_obj)
+
+    # Ordered list of dynamic symbols for level arithmetic
+    DYN_LEVELS = ["pppp", "ppp", "pp", "p", "mp", "mf", "f", "ff", "fff", "ffff"]
 
     events: List[DynamicEvent] = []
     for part in score_obj.parts:
         obj_id = part_to_object.get(part.partName or "", None)
         if obj_id is None:
-            # Try to infer from part abbreviation or index
             obj_id = part_to_object.get(part.partAbbreviation or "", f"part_{part.id}")
 
+        # ── 1. Extract explicit <dynamics> markings ────────────────────────
+        dyn_mark_events: List[DynamicEvent] = []
         for elem in part.recurse().getElementsByClass(m21_dynamics.Dynamic):
-            sym = elem.value or elem.volumeScalar  # e.g. "pp", "ff"
+            sym = elem.value or elem.volumeScalar
             if sym is None:
                 continue
             sym = str(sym).strip().lower()
             vel = DYNAMICS_VELOCITY.get(sym, 0.5)
-            ts = offset_to_seconds(float(elem.offset), spans)
-            events.append(DynamicEvent(
+            try:
+                abs_offset = float(elem.getOffsetInHierarchy(score_obj))
+            except Exception:
+                abs_offset = float(elem.offset)
+            ts = offset_to_seconds(abs_offset, spans)
+            dyn_mark_events.append(DynamicEvent(
                 measure=int(elem.measureNumber or 0),
                 beat=float(elem.beat or 0.0),
                 timestamp_s=ts,
@@ -322,9 +334,141 @@ def extract_dynamic_events(score_obj: stream.Score) -> List[DynamicEvent]:
                 dynamic_symbol=sym,
                 velocity=vel,
             ))
+        events.extend(dyn_mark_events)
+        # Sort by time so we can look up "last dynamic before hairpin"
+        dyn_mark_events.sort(key=lambda e: e.timestamp_s)
 
-    LOGGER.info("Extracted %d dynamic events across all parts", len(events))
+        # ── 2. Extract hairpin wedges (crescendo / diminuendo) ─────────────
+        for sp in part.recurse().getElementsByClass(m21_dynamics.Crescendo):
+            # Find last known dynamic before this hairpin starts
+            fn = sp.getFirst()
+            if fn is None:
+                continue
+            try:
+                sp_start_ts = offset_to_seconds(float(fn.getOffsetInHierarchy(score_obj)), spans)
+            except Exception:
+                continue
+            pre = [e for e in dyn_mark_events if e.timestamp_s <= sp_start_ts + 1e-6]
+            ref = pre[-1] if pre else None
+            ref_vel = ref.velocity if ref else 0.5
+            ref_sym = ref.dynamic_symbol if ref else "mp"
+            _add_hairpin_events(sp, score_obj, obj_id, spans,
+                                DYN_LEVELS, ref_vel, ref_sym,
+                                direction=+1, events=events)
+
+        for sp in part.recurse().getElementsByClass(m21_dynamics.Diminuendo):
+            fn = sp.getFirst()
+            if fn is None:
+                continue
+            try:
+                sp_start_ts = offset_to_seconds(float(fn.getOffsetInHierarchy(score_obj)), spans)
+            except Exception:
+                continue
+            pre = [e for e in dyn_mark_events if e.timestamp_s <= sp_start_ts + 1e-6]
+            ref = pre[-1] if pre else None
+            ref_vel = ref.velocity if ref else 0.5
+            ref_sym = ref.dynamic_symbol if ref else "mp"
+            _add_hairpin_events(sp, score_obj, obj_id, spans,
+                                DYN_LEVELS, ref_vel, ref_sym,
+                                direction=-1, events=events)
+
+    # Sort all events by object then time
+    events.sort(key=lambda e: (e.object_id, e.timestamp_s))
+    LOGGER.info("Extracted %d dynamic events across all parts (incl. hairpins)", len(events))
     return events
+
+
+def _add_hairpin_events(
+    spanner,
+    score_obj: stream.Score,
+    obj_id: str,
+    spans: List[TempoSpan],
+    dyn_levels: List[str],
+    last_velocity: float,
+    last_sym: str,
+    direction: int,   # +1 = crescendo, -1 = diminuendo
+    events: List[DynamicEvent],
+) -> None:
+    """Generate interpolated DynamicEvents for a hairpin spanner.
+
+    Campionamento sub-beat (ogni STEP_Q quarti) per movimenti fluidi in Nuendo.
+    Il diminuendo va dall'ultimo dynamic esplicito fino all'estremo opposto
+    (crescendo → ff, diminuendo → p) in modo che l'escursione spaziale sia
+    sempre percettibile.
+    """
+    first_note = spanner.getFirst()
+    last_note  = spanner.getLast()
+    if first_note is None or last_note is None:
+        return
+
+    try:
+        start_offset = float(first_note.getOffsetInHierarchy(score_obj))
+        end_offset   = float(last_note.getOffsetInHierarchy(score_obj))
+        # Include l'intera ultima nota (aggiungiamo la sua durata)
+        end_offset   = end_offset + float(last_note.duration.quarterLength)
+    except Exception:
+        return
+
+    # ── Fix: hairpin degenere (first == last, stessa nota) ───────────────
+    # music21 non riesce a risolvere il last del wedge quando lo <stop> è
+    # nella misura successiva come <direction> senza offset relativo alle note.
+    # In questo caso end_offset = start_offset + dur_nota (es. 1.0 quarter),
+    # molto più corto di quanto notato. Estendiamo end_offset cercando la prima
+    # Dynamic esplicita DOPO start_offset nello stesso part — quella segna la
+    # fine reale del hairpin.
+    if end_offset - start_offset <= float(last_note.duration.quarterLength) + 1e-6:
+        # Trova la parte che contiene questa nota
+        containing_part = None
+        for part in score_obj.parts:
+            if first_note in part.flatten().notes:
+                containing_part = part
+                break
+        if containing_part is not None:
+            # Cerca la prossima Dynamic esplicita dopo start_offset
+            for dyn in containing_part.flatten().getElementsByClass("Dynamic"):
+                dyn_offset = float(dyn.getOffsetInHierarchy(score_obj))
+                if dyn_offset > start_offset + 1e-6:
+                    end_offset = dyn_offset
+                    break
+
+    if end_offset <= start_offset:
+        return
+
+    # Start velocity = last known dynamic before the hairpin
+    start_vel = last_velocity
+    start_sym = last_sym
+
+    # End velocity:
+    #   diminuendo → sempre "p"  (vel=0.375, Y=+1.0 = front): escursione massima garantita
+    #   crescendo  → sempre "ff" (vel=0.875, Y=-1.0 = rear)
+    # In questo modo il range di Y coincide sempre con i poli della rule (0.375–0.75).
+    if direction < 0:
+        end_sym = "p"
+    else:
+        end_sym = "ff"
+    end_vel = DYNAMICS_VELOCITY.get(end_sym, start_vel)
+
+    # Campionamento sub-beat: ogni 0.25 quarti (4 messaggi per beat)
+    STEP_Q = 0.25
+    offset = start_offset
+    while offset <= end_offset + 1e-9:
+        t = (offset - start_offset) / (end_offset - start_offset)
+        t = max(0.0, min(1.0, t))
+        vel = start_vel + (end_vel - start_vel) * t
+        sym = end_sym if t > 0.5 else start_sym
+        ts  = offset_to_seconds(offset, spans)
+        measure = int(first_note.measureNumber or 0)
+        beat    = float(first_note.beat or 1.0) + (offset - start_offset)
+        events.append(DynamicEvent(
+            measure=measure,
+            beat=round(beat, 4),
+            timestamp_s=ts,
+            part_name="",
+            object_id=obj_id,
+            dynamic_symbol=f"~{sym}",   # prefix ~ = interpolated
+            velocity=round(vel, 4),
+        ))
+        offset = round(offset + STEP_Q, 9)  # evita accumulo floating point
 
 
 def _build_part_to_object_map(score_obj: stream.Score) -> Dict[str, str]:
@@ -416,7 +560,8 @@ def apply_mapping_to_events(
 #
 # Regola compositiva applicata:
 #   - X fisso per strumento (posizione sul palco, non cambia)
-#   - Y varia con la dinamica: pp → dietro, ff → avanti
+#   - Y varia con la dinamica: p → front (+1.0), f → centro (0.0)
+#     (scala INVERTITA: più forte = più indietro verso il centro)
 #   - Z = 0.0 sempre (Main layer, nessun overhead di default)
 
 # Posizione X fissa per strumento — disposizione quartetto sul palco
@@ -431,8 +576,8 @@ _BASE_X: Dict[str, float] = {
 def dynamics_to_cartesian(
     velocity: float,
     object_id: str,
-    base_y_soft: float = -0.6,   # Y quando pp  (ben dietro il centro)
-    base_y_loud: float = 0.9,    # Y quando ff  (molto avanti)
+    base_y_soft: float = 1.0,    # Y quando ppp/p  → +1.0 = front (vicinissimo all'ascoltatore)
+    base_y_loud: float = 0.0,    # Y quando fff/f  →  0.0 = centro (posizione neutra)
     z: float = 0.0,              # Z = 0.0 → Main layer (piano ascoltatore)
 ) -> Tuple[float, float, float]:
     """Map a normalised velocity [0–1] to (x, y, z) ADM-OSC coordinates.
@@ -441,12 +586,11 @@ def dynamics_to_cartesian(
         x: -1.0 (L)    … +1.0 (R)
         y: -1.0 (rear) … +1.0 (front)
         z:  0.0 (Main/listener plane)  …  1.0 (Top/ceiling layer)
-            — NOT a continuous physical height axis —
-            M = "attorno a me", 0.5 = "a metà altezza", T = "sopra di me"
 
     Compositional rule:
         - x: fixed per instrument (stage position, from _BASE_X)
-        - y: scales with dynamic — pp=rear, ff=front
+        - y: INVERTED scale — p=front (+1.0), f=centre (0.0)
+             (soft = close/intimate, loud = centred/present)
         - z: fixed at 0.0 (Main layer) unless overridden
     """
     x = _BASE_X.get(object_id, 0.0)
@@ -496,6 +640,9 @@ def build_spatial_timeline(
     else:
         spread_values = [0.0] * len(chord_events)
 
+    # Collect position_y rule (dynamics → Y mapping from JSON)
+    position_y_rule = next((r for r in rules if r.spatial_target == "position_y"), None)
+
     # ── Build per-instrument dynamic lookup (last-known-value) ──
     # Group dynamic events per object_id, sorted by time
     dyn_by_object: Dict[str, List[DynamicEvent]] = {}
@@ -504,16 +651,36 @@ def build_spatial_timeline(
 
     all_objects = list(OBJECT_INDEX.keys())
 
+    # ── Indice di tensione per timestamp (usato anche per gli eventi sub-beat hairpin) ──
+    # Mappa timestamp → (tension, spread) per interpolazione
+    ts_to_tension: Dict[float, float] = {e.timestamp_s: t for e, t in zip(chord_events, tension_scores)}
+    ts_to_spread:  Dict[float, float] = {e.timestamp_s: s for e, s in zip(chord_events, spread_values)}
+
+    # ── Raccoglie tutti i timestamp unici da considerare:
+    #    - i chord events (1/beat)
+    #    - i dynamic events interpolati sub-beat (hairpin, prefisso ~)
+    chord_ts_set = {e.timestamp_s for e in chord_events}
+    hairpin_dyn_events = [de for de in dynamic_events if de.dynamic_symbol.startswith("~")]
+
+    # Timestamp aggiuntivi per ogni oggetto (solo hairpin sub-beat)
+    hairpin_ts_by_obj: Dict[str, List[float]] = {}
+    for de in hairpin_dyn_events:
+        if de.timestamp_s not in chord_ts_set:
+            hairpin_ts_by_obj.setdefault(de.object_id, []).append(de.timestamp_s)
+
     rows: List[Dict] = []
+
+    # ── 1. Righe dai chord events (come prima) ────────────────────────────
     for ev, tension, spread in zip(chord_events, tension_scores, spread_values):
         for obj_id in all_objects:
-            # Find the last dynamic event for this object at or before ev.timestamp_s
             dyn_evs = dyn_by_object.get(obj_id, [])
             active_dyn = _last_before(dyn_evs, ev.timestamp_s)
             velocity = active_dyn.velocity if active_dyn else 0.5
             dyn_sym = active_dyn.dynamic_symbol if active_dyn else "mp"
 
             x, y, z = dynamics_to_cartesian(velocity, obj_id)
+            if position_y_rule:
+                y = float(np.clip(apply_mapping(velocity, position_y_rule.mapping), -1.0, 1.0))
 
             rows.append({
                 "timestamp_s":    ev.timestamp_s,
@@ -531,9 +698,53 @@ def build_spatial_timeline(
                 "active_rule_id": active_rule_id,
             })
 
+    # ── 2. Righe extra per i sub-beat del diminuendo/crescendo ────────────
+    # Per ogni timestamp hairpin non coperto da un chord event, emetti
+    # un OSC row per ogni strumento usando l'ultimo dynamic disponibile.
+    for obj_id in all_objects:
+        extra_ts = sorted(set(hairpin_ts_by_obj.get(obj_id, [])))
+        dyn_evs = dyn_by_object.get(obj_id, [])
+        for ts in extra_ts:
+            active_dyn = _last_before(dyn_evs, ts)
+            if active_dyn is None:
+                continue
+            velocity = active_dyn.velocity
+            dyn_sym  = active_dyn.dynamic_symbol
+
+            x, y, z = dynamics_to_cartesian(velocity, obj_id)
+            if position_y_rule:
+                y = float(np.clip(apply_mapping(velocity, position_y_rule.mapping), -1.0, 1.0))
+
+            # Interpolate tension/spread dal chord event precedente
+            prev_chord = max((e for e in chord_events if e.timestamp_s <= ts + 1e-6),
+                             key=lambda e: e.timestamp_s, default=chord_events[0])
+            tension = ts_to_tension.get(prev_chord.timestamp_s, 0.5)
+            spread  = ts_to_spread.get(prev_chord.timestamp_s, 0.0)
+
+            rows.append({
+                "timestamp_s":    ts,
+                "measure":        active_dyn.measure,
+                "beat":           active_dyn.beat,
+                "object_id":      obj_id,
+                "object_index":   OBJECT_INDEX.get(obj_id, 0),
+                "spread":         round(spread, 4),
+                "x":              round(x, 4),
+                "y":              round(y, 4),
+                "z":              round(z, 4),
+                "tension_score":  round(tension, 4),
+                "rms_velocity":   round(velocity, 4),
+                "dynamic_symbol": dyn_sym,
+                "active_rule_id": active_rule_id,
+            })
+
     df = pd.DataFrame(rows)
     df.sort_values(["timestamp_s", "object_index"], inplace=True, ignore_index=True)
-    LOGGER.info("Spatial timeline built: %d rows", len(df))
+    # Rimuovi solo duplicati con STESSO timestamp E stesso object (non i sub-beat che hanno ts diverso)
+    df.drop_duplicates(subset=["timestamp_s", "object_id"], keep="last", inplace=True)
+    df.sort_values(["timestamp_s", "object_index"], inplace=True, ignore_index=True)
+    n_chord_rows = len(chord_events) * len(all_objects)
+    LOGGER.info("Spatial timeline built: %d rows (%d sub-beat hairpin rows added)",
+                len(df), len(df) - n_chord_rows)
     return df
 
 
@@ -556,7 +767,7 @@ class OscScheduler:
     """Real-time OSC scheduler locked to wall-clock time.
 
     Usage:
-        scheduler = OscScheduler(timeline_df, osc_client, dry_run=False)
+        scheduler = OscScheduler(timeline_df, client=nuendo_client)
         scheduler.start(t0_wall=time.perf_counter())
         # …Nuendo plays…
         scheduler.join()
@@ -565,7 +776,7 @@ class OscScheduler:
     def __init__(
         self,
         timeline: pd.DataFrame,
-        client: Optional[SimpleUDPClient],
+        client: Optional[SimpleUDPClient] = None,
         dry_run: bool = False,
         listen_host: str = "127.0.0.1",
         listen_port: int = 9001,
@@ -635,23 +846,17 @@ class OscScheduler:
 
     def _dispatch_row(self, row: pd.Series) -> None:
         idx = int(row["object_index"])
-        # ADM-OSC range: x -1.0 (L) → +1.0 (R), y -1.0 (back) → +1.0 (front), z 0..1
-        # Timeline CSV usa x in [0,1] — convertiamo a [-1, +1] con clamp di sicurezza
-        x_norm = max(0.0, min(1.0, float(row["x"])))   # clamp [0,1]
-        y_norm = max(0.0, min(1.0, float(row["y"])))   # clamp [0,1]
-        z_norm = max(0.0, min(1.0, float(row["z"])))   # clamp [0,1]
-        x_adm = x_norm * 2.0 - 1.0                    # → -1..+1
-        y_adm = y_norm * 2.0 - 1.0                    # → -1..+1
-        z_adm = z_norm                                 # Nuendo accetta 0..1 per z
+        x_adm = max(-1.0, min(1.0, float(row["x"])))
+        y_adm = max(-1.0, min(1.0, float(row["y"])))
+        z_adm = max(0.0,  min(1.0, float(row["z"])))
 
-        # ✅ Formato confermato in Nuendo (ADM-OSC EBU, fluido L↔R su asse Y centrale):
+        # ✅ Formato confermato in Nuendo (ADM-OSC EBU):
         #   Address : /adm/obj/{n}/xyz
         #   Args    : [x (float -1..+1), y (float -1..+1), z (float 0..1)]
-        #   Port    : 8000
         addr = f"/adm/obj/{idx}/xyz"
         args = [x_adm, y_adm, z_adm]
 
-        if self.dry_run or self.client is None:
+        if self.dry_run or not self.client:
             LOGGER.info("DRY  %s -> [%.3f, %.3f, %.3f]", addr, *args)
         else:
             self.client.send_message(addr, args)
@@ -697,6 +902,7 @@ def dispatch_spread_messages(
 
 
 def create_osc_client(host: str, port: int, dry_run: bool) -> Optional[SimpleUDPClient]:
+    """Create a single OSC UDP client (or None in dry-run mode)."""
     if dry_run:
         return None
     return SimpleUDPClient(host, port)
@@ -763,11 +969,15 @@ def main() -> None:
 
     # ── Step 6: OSC Scheduler ─────────────────────────────────────────────
     LOGGER.info("Step 6 — Starting OSC Scheduler…")
-    target = osc_config.get("default_target", {})
-    host = target.get("host", "127.0.0.1")
-    port = int(target.get("port", 8000))
     listen_port = int(osc_config.get("listen_port", 9001))
-    osc_client = create_osc_client(host, port, args.dry_run)
+
+    # Build OSC client for Nuendo
+    primary = osc_config.get("default_target", {})
+    osc_client = create_osc_client(
+        primary.get("host", "127.0.0.1"),
+        int(primary.get("port", 8000)),
+        args.dry_run,
+    )
 
     scheduler = OscScheduler(
         timeline=timeline_df,

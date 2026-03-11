@@ -1,0 +1,101 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "OSC → Nuendo (dry-run)",
+      "type": "shell",
+      "command": "${workspaceFolder}/../.venv/bin/python",
+      "args": [
+        "src/cre/rule_engine.py",
+        "--score", "data/musicxml/quartet.musicxml",
+        "--dry-run"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "OSC → Nuendo (live)",
+      "type": "shell",
+      "command": "${workspaceFolder}/../.venv/bin/python",
+      "args": [
+        "src/cre/rule_engine.py",
+        "--score", "data/musicxml/quartet.musicxml"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "MTC → Nuendo (sync con transport)",
+      "type": "shell",
+      "command": "${workspaceFolder}/../.venv/bin/python",
+      "args": [
+        "src/cre/mtc_sync.py",
+        "--score", "data/musicxml/quartet.musicxml"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "isBackground": false,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "MTC → Nuendo (dry-run)",
+      "type": "shell",
+      "command": "${workspaceFolder}/../.venv/bin/python",
+      "args": [
+        "src/cre/mtc_sync.py",
+        "--score", "data/musicxml/quartet.musicxml",
+        "--dry-run"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
+      "isBackground": false,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "OSC → Nuendo (realtime, aspetta /transport/play)",
+      "type": "shell",
+      "command": "${workspaceFolder}/../.venv/bin/python",
+      "args": [
+        "src/cre/rule_engine.py",
+        "--score", "data/musicxml/quartet.musicxml",
+        "--realtime"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

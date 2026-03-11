@@ -1,0 +1,10 @@
+{
+  "id": "harmony_to_spread",
+  "description": "Maps harmonic tension to spatial spread of string quartet objects",
+  "trigger_parameter": "tension_score",
+  "spatial_target": "spread",
+  "mapping_function": "linear(0.0→1.0 : 0.0→1.0)",
+  "objects": ["violin_1", "violin_2", "viola", "cello"],
+  "temporal_scope": "meso",
+  "smoothing_ms": 500
+}
